@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Question Bank Builder</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 16px; background: #f7f7f9; color: #222; }
+  h2 { margin: 0 0 8px; }
+  textarea { width: 100%; height: 180px; font-family: monospace; font-size: 13px; padding: 8px; box-sizing: border-box; }
+  button { padding: 8px 16px; margin: 4px 6px 4px 0; font-size: 14px; cursor: pointer; border: none; border-radius: 4px; }
+  .primary { background: #1a73e8; color: #fff; }
+  .green { background: #188038; color: #fff; }
+  .red { background: #d93025; color: #fff; }
+  .grey { background: #5f6368; color: #fff; }
+  .status { margin: 10px 0; padding: 10px; background: #fff; border-left: 4px solid #1a73e8; font-size: 13px; }
+  .warn { border-left-color: #d93025; color: #b00020; }
+  table { border-collapse: collapse; font-size: 12px; margin-top: 8px; width: 100%; background: #fff; }
+  th, td { border: 1px solid #ddd; padding: 4px 6px; text-align: left; vertical-align: top; }
+  th { background: #eee; position: sticky; top: 0; }
+  tr.bad td { background: #fdecea; }
+  .scroll { max-height: 420px; overflow: auto; }
+  .hint { font-size: 12px; color: #555; margin-bottom: 6px; }
+</style>
+</head>
+<body>
+
+<h2>Question Bank Builder</h2>
+<div class="hint">
+  Paste <b>tab-delimited</b> rows, 10 fields each:<br>
+  <code>Subject | Question type | Question | Option A | Option B | Option C | Option D | Ans | Marks | Topic</code><br>
+  Use a <b>literal tab</b> between fields. Newline between rows. Click <b>Add</b> to append. Download any time.
+</div>
+
+<textarea id="pasteBox" placeholder="Paste rows here..."></textarea>
+<div>
+  <button class="primary" onclick="addRows()">Add</button>
+  <button class="green" onclick="downloadXLSX()">Download .xlsx</button>
+  <button class="grey" onclick="downloadXLS()">Download .xls (offline)</button>
+  <button class="red" onclick="clearAll()">Clear All</button>
+</div>
+
+<div id="status" class="status">Rows: 0</div>
+
+<div class="scroll">
+  <table id="preview">
+    <thead>
+      <tr>
+        <th>#</th><th>Subject</th><th>Type</th><th>Question</th>
+        <th>A</th><th>B</th><th>C</th><th>D</th><th>Ans</th><th>Marks</th><th>Topic</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+<script>
+const HEADERS = ["Subject","Question type","Question","Option A","Option B","Option C","Option D","Ans","Marks","Topic"];
+const STORAGE_KEY = "qbank_rows_v1";
+let rows = [];
+
+// Load persisted data
+try {
+  const saved = localStorage.getItem(STORAGE_KEY);
+  if (saved) rows = JSON.parse(saved);
+} catch(e) { console.warn("load failed", e); }
+
+function save() {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(rows)); }
+  catch(e) { alert("Autosave failed (storage full?). Download now to avoid data loss."); }
+}
+
+function addRows() {
+  const box = document.getElementById("pasteBox");
+  const raw = box.value.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const lines = raw.split("\n").filter(l => l.trim().length > 0);
+  if (lines.length === 0) { setStatus("Nothing to add.", true); return; }
+
+  const existingQ = new Set(rows.map(r => (r[2]||"").trim().toLowerCase()));
+  const skipped = [];
+  const added = [];
+
+  lines.forEach((line, idx) => {
+    const f = line.split("\t");
+    if (f.length !== 10) {
+      skipped.push(`Line ${idx+1}: expected 10 fields, got ${f.length}`);
+      return;
+    }
+    const cleaned = f.map(x => x.trim());
+    const qkey = cleaned[2].toLowerCase();
+    if (existingQ.has(qkey)) {
+      skipped.push(`Line ${idx+1}: duplicate question skipped`);
+      return;
+    }
+    existingQ.add(qkey);
+    added.push(cleaned);
+  });
+
+  rows = rows.concat(added);
+  save();
+  render();
+  box.value = "";
+
+  let msg = `Added ${added.length} row(s). Total: ${rows.length}.`;
+  if (skipped.length) {
+    msg += ` Skipped ${skipped.length}:<br>` + skipped.slice(0,10).join("<br>") +
+           (skipped.length > 10 ? `<br>...and ${skipped.length-10} more.` : "");
+  }
+  setStatus(msg, skipped.length > 0);
+}
+
+function render() {
+  const tbody = document.querySelector("#preview tbody");
+  tbody.innerHTML = "";
+  rows.forEach((r, i) => {
+    const tr = document.createElement("tr");
+    const ans = (r[7]||"").toUpperCase();
+    const bad = !["A","B","C","D"].includes(ans);
+    if (bad) tr.classList.add("bad");
+    tr.innerHTML = `<td>${i+1}</td>` +
+      r.map(c => `<td>${escapeHtml(c)}</td>`).join("");
+    tbody.appendChild(tr);
+  });
+  updateStatus();
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+  }[c]));
+}
+
+function stats() {
+  const st = { total: rows.length, hard:0, medium:0, easy:0, A:0, B:0, C:0, D:0, bad:0 };
+  rows.forEach(r => {
+    const topic = r[9] || "";
+    if (/\[H\]/i.test(topic)) st.hard++;
+    else if (/\[M\]/i.test(topic)) st.medium++;
+    else if (/\[E\]/i.test(topic)) st.easy++;
+    const a = (r[7]||"").toUpperCase();
+    if (st[a] !== undefined) st[a]++;
+    else st.bad++;
+  });
+  return st;
+}
+
+function updateStatus() {
+  const s = stats();
+  setStatus(`Rows: ${s.total} &nbsp;|&nbsp; Hard/Med/Easy: ${s.hard}/${s.medium}/${s.easy} &nbsp;|&nbsp; A/B/C/D: ${s.A}/${s.B}/${s.C}/${s.D}` +
+    (s.bad ? ` &nbsp;|&nbsp; <b>${s.bad} invalid Ans</b>` : ""), s.bad > 0);
+}
+
+function setStatus(html, warn) {
+  const el = document.getElementById("status");
+  el.innerHTML = html;
+  el.className = "status" + (warn ? " warn" : "");
+}
+
+function downloadXLSX() {
+  if (!rows.length) { alert("No rows to download."); return; }
+  if (typeof XLSX === "undefined") {
+    alert("SheetJS not loaded (no internet?). Use the offline .xls button instead.");
+    return;
+  }
+  const data = [HEADERS].concat(rows);
+  const ws = XLSX.utils.aoa_to_sheet(data);
+  ws["!cols"] = [{wch:18},{wch:14},{wch:60},{wch:22},{wch:22},{wch:22},{wch:22},{wch:6},{wch:7},{wch:20}];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Bank");
+  XLSX.writeFile(wb, `QuestionBank_${rows.length}rows.xlsx`);
+}
+
+function downloadXLS() {
+  if (!rows.length) { alert("No rows to download."); return; }
+  let html = '<html xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="UTF-8"></head><body><table border="1">';
+  html += "<tr>" + HEADERS.map(h => `<th>${h}</th>`).join("") + "</tr>";
+  rows.forEach(r => {
+    html += "<tr>" + r.map(c => `<td>${escapeHtml(c)}</td>`).join("") + "</tr>";
+  });
+  html += "</table></body></html>";
+  const blob = new Blob([html], {type: "application/vnd.ms-excel"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `QuestionBank_${rows.length}rows.xls`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function clearAll() {
+  if (!rows.length) return;
+  if (!confirm(`Delete all ${rows.length} rows? This cannot be undone.`)) return;
+  rows = [];
+  save();
+  render();
+}
+
+render();
+</script>
+</body>
+</html>
